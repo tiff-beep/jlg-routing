@@ -78,6 +78,7 @@ export default function Home() {
   const [isDevLead, setIsDevLead] = useState(false);
   const [devCommunity, setDevCommunity] = useState("");
   const [isRental, setIsRental] = useState(false);
+  const [isCash, setIsCash] = useState(false);
 
   // Recommendation + timer
   const [rec, setRec] = useState<Rec | null>(null);
@@ -112,6 +113,20 @@ export default function Home() {
     pollRef.current = id;
     return () => clearInterval(id);
   }, [fetchState]);
+
+  // Auto-apply vacation start dates — pause agents when their vacationStart date hits
+  useEffect(() => {
+    if (!appState) return;
+    const today = new Date().toISOString().split("T")[0];
+    const updated = appState.agents.map((a: any) => {
+      if (!a.onVacation && a.vacationStart && a.vacationStart <= today) {
+        return { ...a, onVacation: true };
+      }
+      return a;
+    });
+    const changed = updated.some((a: any, i: number) => a.onVacation !== appState.agents[i].onVacation);
+    if (changed) saveState({ agents: updated });
+  }, [appState?.agents]);
 
   const saveState = async (patch: Partial<AppState>) => {
     await fetch("/api/state", {
@@ -174,6 +189,9 @@ export default function Home() {
     if (src === "osa" && lastWasOSA(agent.id)) return { ok: false, reason: "Skip — last lead was OSA" };
     return { ok: true };
   };
+
+  // Cash-eligible filter applied at recommendation level
+  const cashEligible = (agent: Agent) => !!(agent as any).cashOffer;
 
   // ── Rotation helpers ────────────────────────────────────────────────────────
   const getRotation = (type: LeadType, src: Source): string[] => {
@@ -245,6 +263,7 @@ export default function Home() {
       if (!agent) continue;
       const elig = isEligible(agent, leadType, priceVal, isRental, source);
       if (!elig.ok) continue;
+      if (isCash && !cashEligible(agent)) continue;
       const sig = zoneSignal(agent, zone);
       if (!found) { found = { agent, zoneSignal: sig, alternatives: [] }; }
       else { alts.push({ agent, zoneSignal: sig }); if (alts.length >= 2) break; }
@@ -265,7 +284,12 @@ export default function Home() {
   const handleFind = () => {
     const r = findRec();
     setRec(r);
-    if (r) { setTimerSecs(1200); setTimerActive(true); }
+    // Timer does NOT auto-start — ISA/OSA starts it manually after reaching out
+  };
+
+  const handleStartTimer = () => {
+    setTimerSecs(1200);
+    setTimerActive(true);
   };
 
   const handleAccept = (agentId: string) => {
@@ -274,10 +298,27 @@ export default function Home() {
     appendLog({ agent_id: agentId, agent_name: agent.name, lead_type: leadType, price: price || null, zone: zone || null, source, status: "accepted", is_cherry_pick: false, logged_at: new Date().toISOString() });
     advanceRotation(agentId);
     setRec(null); setTimerActive(false);
-    setLeadType("buyer"); setPrice(""); setZone(""); setSource("isa"); setIsDevLead(false); setDevCommunity(""); setIsRental(false);
+    setLeadType("buyer"); setPrice(""); setZone(""); setSource("isa"); setIsDevLead(false); setDevCommunity(""); setIsRental(false); setIsCash(false);
   };
 
   const handlePassOpen = (agentId: string) => { setPassingId(agentId); setPassReason(""); setShowPass(true); };
+
+  const handleSkip = (agentId: string) => {
+    // ISA/OSA skip — agent keeps their rotation position, no log entry, just show next
+    if (!appState) return;
+    const priceVal = price ? parseFloat(price.replace(/[^0-9.]/g, "")) : null;
+    const rotList = getRotation(leadType, source);
+    const skippedIdx = rotList.indexOf(agentId);
+    for (let i = 1; i < rotList.length; i++) {
+      const id = rotList[(skippedIdx + i) % rotList.length];
+      const a = appState.agents.find(x => x.id === id);
+      if (!a) continue;
+      if (!isEligible(a, leadType, priceVal, isRental, source).ok) continue;
+      setRec({ agent: a, zoneSignal: zoneSignal(a, zone), alternatives: [] });
+      return;
+    }
+    setRec(null);
+  };
 
   const handlePassConfirm = () => {
     if (!passReason || !appState) return;
@@ -295,7 +336,7 @@ export default function Home() {
       if (!a) continue;
       if (!isEligible(a, leadType, priceVal, isRental, source).ok) continue;
       setRec({ agent: a, zoneSignal: zoneSignal(a, zone), alternatives: [] });
-      setTimerSecs(1200); setTimerActive(true);
+      // Timer not auto-started — user clicks start after reaching out
       return;
     }
     setRec(null);
@@ -381,7 +422,7 @@ export default function Home() {
               </div>
 
               <div className="flex gap-6 mb-5">
-                {[["Rental lead", isRental, setIsRental] as const, ["Dev community lead", isDevLead, (v: boolean) => { setIsDevLead(v); if (!v) setDevCommunity(""); }] as const].map(([lbl, val, setter]) => (
+                {[["Rental lead", isRental, setIsRental] as const, ["Dev community lead", isDevLead, (v: boolean) => { setIsDevLead(v); if (!v) setDevCommunity(""); }] as const, ["Cash offer", isCash, setIsCash] as const].map(([lbl, val, setter]) => (
                   <label key={lbl} className="flex items-center gap-2 cursor-pointer text-sm">
                     <div onClick={() => setter(!val)} className={`w-9 h-5 rounded-full relative transition-colors cursor-pointer ${val ? "bg-emerald-500" : "bg-gray-200"}`}>
                       <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all ${val ? "left-4" : "left-0.5"}`} />
@@ -416,6 +457,7 @@ export default function Home() {
                     </p>
                     <p className="text-2xl font-bold text-gray-900 flex items-center gap-2 flex-wrap">
                       {rec.agent.name}
+                      {(rec.agent as any).cashOffer && badge("blue", "💵 Cash offers")}
                       {rec.zoneSignal === "strong" && badge("green", "✓ Good area match")}
                       {rec.zoneSignal === "flag"   && badge("red",   "⚠ Area mismatch — use judgment")}
                       {rec.zoneSignal === "ok"     && badge("amber", "Area ok")}
@@ -432,11 +474,22 @@ export default function Home() {
                     </div>
                   </div>
                 </div>
-                <div className="flex gap-2 mb-3">
+                <div className="flex gap-2 mb-3 flex-wrap">
                   <button onClick={() => handleAccept(rec.agent.id)} className="bg-emerald-600 text-white px-5 py-2 rounded-lg text-sm font-semibold hover:bg-emerald-700">✓ Accepted</button>
                   <button onClick={() => handlePassOpen(rec.agent.id)} className="bg-red-500 text-white px-5 py-2 rounded-lg text-sm font-semibold hover:bg-red-600">✗ Pass / decline</button>
+                  <button onClick={() => handleSkip(rec.agent.id)} className="bg-amber-500 text-white px-5 py-2 rounded-lg text-sm font-semibold hover:bg-amber-600">↷ Skip (better fit)</button>
                   <button onClick={() => { setRec(null); setTimerActive(false); }} className="ml-auto border border-gray-200 text-gray-600 px-4 py-2 rounded-lg text-sm hover:bg-gray-50">Cancel</button>
                 </div>
+                {!timerActive && (
+                  <div className="mb-3">
+                    <button onClick={handleStartTimer} className="w-full border-2 border-dashed border-gray-300 text-gray-500 py-2.5 rounded-lg text-sm font-medium hover:border-[#1a1a2e] hover:text-[#1a1a2e] transition-colors">
+                      ▶ I've reached out — start 20-min timer
+                    </button>
+                  </div>
+                )}
+                {timerActive && (
+                  <p className="text-xs text-gray-400 mb-3">Timer running — waiting for agent response.</p>
+                )}
                 {rec.alternatives.length > 0 && (
                   <div>
                     <p className="text-xs font-semibold text-gray-400 mb-2">Also eligible in rotation:</p>
@@ -512,6 +565,7 @@ export default function Home() {
                         {agent.listingsOnly          && badge("amber",  "Listings only")}
                         {agent.listingEligible && !agent.listingsOnly && badge("green", "Listings ✓")}
                         {agent.takesRentals          && badge("purple", "Rentals")}
+                        {(agent as any).cashOffer   && badge("blue",   "💵 Cash offers")}
                         {agent.onVacation && badge("amber", `🌴 On vacation${agent.returnDate ? ` · back ${new Date(agent.returnDate + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""}`)}
                       </div>
                       <span className="text-xs text-gray-400">{agent.conversionOverall ? `${agent.conversionOverall}% conv.` : ""}</span>
@@ -627,7 +681,13 @@ export default function Home() {
                         </div>
                       </div>
                       <div>
-                        <label className="block text-xs font-semibold text-gray-400 uppercase mb-1">Vacation return date (blank = manual unpause)</label>
+                        <label className="block text-xs font-semibold text-gray-400 uppercase mb-1">Vacation start date (auto-pauses on this date)</label>
+                        <input type="date" className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+                          value={(editDraft as any).vacationStart ?? ""}
+                          onChange={e => setEditDraft(d => d ? { ...d, vacationStart: e.target.value || null } as any : d)} />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-400 uppercase mb-1">Vacation return date (auto-unpauses on this date)</label>
                         <input type="date" className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
                           value={editDraft.returnDate ?? ""}
                           onChange={e => setEditDraft(d => d ? { ...d, returnDate: e.target.value || null } : d)} />
@@ -639,6 +699,7 @@ export default function Home() {
                           ["Buyers only (no sellers)", "buyerOnly"],
                           ["Active in rotation", "active"],
                           ["Takes rentals", "takesRentals"],
+                          ["💵 Cash offer expert", "cashOffer"],
                           ["🌴 On vacation", "onVacation"],
                         ].map(([lbl, key]) => (
                           <label key={key} className="flex items-center gap-2 cursor-pointer text-sm">
@@ -677,6 +738,16 @@ export default function Home() {
                             );
                           })}
                         </div>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-400 uppercase mb-1">Agent notes (shows on recommendation card)</label>
+                        <textarea
+                          className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm resize-none"
+                          rows={3}
+                          placeholder="e.g. Loves dogs, great with first-time buyers, condo expert..."
+                          value={editDraft.notes ?? ""}
+                          onChange={e => setEditDraft(d => d ? { ...d, notes: e.target.value } : d)}
+                        />
                       </div>
                       <button onClick={handleSaveAgent} className="bg-[#1a1a2e] text-white px-5 py-2 rounded-lg text-sm font-semibold hover:opacity-90">
                         Save changes
