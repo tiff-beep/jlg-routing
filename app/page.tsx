@@ -177,6 +177,7 @@ export default function Home() {
   // ── Eligibility ─────────────────────────────────────────────────────────────
   const isEligible = (agent: Agent, type: LeadType, priceVal: number | null, rental: boolean, src: Source): { ok: boolean; reason?: string } => {
     if (!agent.active)      return { ok: false, reason: "Inactive" };
+    if ((agent as any).offTeam) return { ok: false, reason: "Off team" };
     if (agent.onVacation)   return { ok: false, reason: "On vacation" };
     if (rental && !agent.takesRentals) return { ok: false, reason: "No rentals" };
     if (type === "seller" && (agent.buyerOnly || !agent.listingEligible)) return { ok: false, reason: "Not listing eligible" };
@@ -560,8 +561,7 @@ export default function Home() {
                         {agent.role === "partner"    && badge("blue",   "Partner")}
                         {agent.role === "jr_partner" && badge("blue",   "Jr Partner")}
                         {(agent as any).referOut     && badge("purple", "Refer out")}
-                        {(agent as any).comingSoon   && badge("amber",  "Coming soon")}
-                        {agent.provisional && !(agent as any).comingSoon && badge("red", "Provisional")}
+                        {(agent as any).offTeam      && badge("gray",   "Off team")}
                         {agent.listingsOnly          && badge("amber",  "Listings only")}
                         {agent.listingEligible && !agent.listingsOnly && badge("green", "Listings ✓")}
                         {agent.takesRentals          && badge("purple", "Rentals")}
@@ -701,6 +701,7 @@ export default function Home() {
                           ["Takes rentals", "takesRentals"],
                           ["💵 Cash offer expert", "cashOffer"],
                           ["🌴 On vacation", "onVacation"],
+                          ["🚫 No longer on team", "offTeam"],
                         ].map(([lbl, key]) => (
                           <label key={key} className="flex items-center gap-2 cursor-pointer text-sm">
                             <div onClick={() => setEditDraft(d => d ? { ...d, [key]: !(d as any)[key] } : d)}
