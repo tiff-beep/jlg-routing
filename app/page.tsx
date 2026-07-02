@@ -25,7 +25,7 @@ interface Slot {
   id:number;
   leadType:LeadType; price:string; zone:string;
   staffName:string; direction:"inbound"|"outbound";
-  isDevLead:boolean; devCommunity:string; isRental:boolean; isCash:boolean;
+  isDevLead:boolean; devCommunity:string; isRental:boolean; isCash:boolean; isReferOut:boolean;
   rec:Rec|null; timerSecs:number; timerActive:boolean;
   showPass:boolean; passingId:string; passReason:string;
   prevAgentId:string|null;
@@ -44,7 +44,7 @@ const STAFF = ["Aidan","Jasmine","Kate","Michelle","Ryan"];
 function buildSlot(id:number):Slot {
   return {id,leadType:"buyer",price:"",zone:"",
     staffName:"",direction:"inbound",
-    isDevLead:false,devCommunity:"",isRental:false,isCash:false,
+    isDevLead:false,devCommunity:"",isRental:false,isCash:false,isReferOut:false,
     rec:null,timerSecs:0,timerActive:false,
     showPass:false,passingId:"",passReason:"",prevAgentId:null,pendingAgentIds:[]};
 }
@@ -202,6 +202,35 @@ export default function Home(){
   const findRec=(slot:Slot,state:AppState):Rec|null=>{
     if(!state)return null;
     const priceVal=slot.price?parseFloat(slot.price.replace(/[^0-9.]/g,"")):null;
+    // Refer out — always routes to Justin only
+    if(slot.isReferOut){
+      const justin=state.agents.find(a=>a.id==="justin");
+      if(!justin)return null;
+      return{agent:justin,zoneSignal:"strong",alternatives:[]};
+    }
+    // For seller/buysell: always check Ashton first if eligible
+    if(slot.leadType==="seller"||slot.leadType==="buysell"){
+      const ashton=state.agents.find(a=>a.id==="ashton");
+      if(ashton&&ashton.active&&!ashton.onVacation&&!(ashton as any).offTeam&&!slot.pendingAgentIds.includes("ashton")){
+        const elig=isEligible(ashton,slot.leadType,priceVal,slot.isRental,slot.direction,slot.isCash);
+        if(elig.ok){
+          // Find next eligible after Ashton for alternatives
+          const rotList=getRotation(slot.leadType,slot.direction,state);
+          const alts:{agent:Agent;zoneSignal:"strong"|"ok"|"flag"}[]=[];
+          for(const id of rotList){
+            if(id==="ashton")continue;
+            const a=state.agents.find(x=>x.id===id);
+            if(!a)continue;
+            if(!isEligible(a,slot.leadType,priceVal,slot.isRental,slot.direction,slot.isCash).ok)continue;
+            if(slot.pendingAgentIds.includes(a.id))continue;
+            alts.push({agent:a,zoneSignal:zoneSignal(a,slot.zone)});
+            if(alts.length>=2)break;
+          }
+          return{agent:ashton,zoneSignal:zoneSignal(ashton,slot.zone),alternatives:alts};
+        }
+      }
+    }
+
     if(priceVal&&priceVal<=250000){
       const subRot=state.buyerRotation.filter(id=>SUB250K_POOL.includes(id));
       for(const id of subRot){
@@ -391,7 +420,8 @@ export default function Home(){
         <div className="flex gap-4 mb-3 flex-wrap">
           {([["Rental",slot.isRental,(v:boolean)=>updateSlot(slot.id,{isRental:v})],
              ["Dev community",slot.isDevLead,(v:boolean)=>updateSlot(slot.id,{isDevLead:v,devCommunity:v?slot.devCommunity:""})],
-             ["Cash offer",slot.isCash,(v:boolean)=>updateSlot(slot.id,{isCash:v})]] as [string,boolean,(v:boolean)=>void][]).map(([lbl,val,setter])=>(
+             ["Cash offer",slot.isCash,(v:boolean)=>updateSlot(slot.id,{isCash:v})],
+             ["Refer out (Justin)",slot.isReferOut,(v:boolean)=>updateSlot(slot.id,{isReferOut:v})]] as [string,boolean,(v:boolean)=>void][]).map(([lbl,val,setter])=>(
             <label key={lbl} className="flex items-center gap-2 cursor-pointer text-sm font-medium text-gray-700">
               <div onClick={()=>setter(!val)} className={`w-9 h-5 rounded-full relative transition-colors cursor-pointer ${val?"bg-green-600":"bg-gray-300"}`}>
                 <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all ${val?"left-4":"left-0.5"}`}/>
@@ -460,24 +490,40 @@ export default function Home(){
               </button>
             )}
 
-            {slot.rec.alternatives.length>0&&(
-              <div>
-                <p className="text-xs font-bold text-gray-500 mb-2">Also eligible:</p>
-                <div className="flex gap-2">
-                  {slot.rec.alternatives.map(alt=>(
-                    <div key={alt.agent.id} onClick={()=>handleAccept(slot.id,alt.agent.id)}
-                      className="flex-1 border-2 border-gray-200 rounded-lg p-2 cursor-pointer hover:bg-white hover:border-gray-400 transition-colors">
-                      <p className="font-black text-sm text-gray-900">{alt.agent.name}</p>
-                      <div className="mt-1">
-                        {alt.zoneSignal==="strong"&&bdg("green","✓ Area")}
-                        {alt.zoneSignal==="flag"&&bdg("red","⚠ Flag")}
-                        {alt.zoneSignal==="ok"&&bdg("amber","Area ok")}
-                      </div>
-                    </div>
-                  ))}
+            {/* Quick pick — all agents */}
+            {appState&&(()=>{
+              const priceVal=slot.price?parseFloat(slot.price.replace(/[^0-9.]/g,"")):null;
+              const allAgents=[...appState.agents]
+                .filter(a=>a.id!==slot.rec!.agent.id&&!a.referOut&&!(a as any).offTeam)
+                .sort((a,b)=>a.name.localeCompare(b.name));
+              return(
+                <div className="mt-3">
+                  <p className="text-xs font-black text-gray-500 uppercase mb-2">Quick-pick any agent:</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {allAgents.map(a=>{
+                      const elig=isEligible(a,slot.leadType,priceVal,slot.isRental,slot.direction,slot.isCash);
+                      const sig=zoneSignal(a,slot.zone);
+                      const isPending=slot.pendingAgentIds.includes(a.id);
+                      return(
+                        <button key={a.id} onClick={()=>handleAccept(slot.id,a.id)}
+                          title={!elig.ok?elig.reason:""}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-bold border-2 transition-colors
+                            ${isPending?"border-gray-200 text-gray-300 bg-gray-50 cursor-not-allowed":
+                              !elig.ok?"border-gray-100 text-gray-400 bg-gray-50 cursor-default":
+                              sig==="flag"?"border-red-300 text-red-700 bg-red-50 hover:bg-red-700 hover:text-white hover:border-red-700":
+                              sig==="strong"?"border-green-300 text-green-800 bg-green-50 hover:bg-green-700 hover:text-white hover:border-green-700":
+                              "border-gray-200 text-gray-700 bg-white hover:border-gray-900 hover:bg-gray-900 hover:text-white"}`}>
+                          {a.name}
+                          {isPending&&" 🔒"}
+                          {!isPending&&sig==="flag"&&" ⚠"}
+                          {!isPending&&sig==="strong"&&elig.ok&&" ✓"}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
           </div>
         )}
 
@@ -663,7 +709,7 @@ export default function Home(){
               <div className="bg-amber-50 border-2 border-amber-200 rounded-xl p-4 mb-4">
                 <p className="text-xs font-black text-amber-800 uppercase mb-3">Edit starting counts</p>
                 <div className="space-y-2">
-                  {appState.agents.filter(a=>!a.referOut&&!(a as any).offTeam).map(agent=>(
+                  {[...appState.agents].filter(a=>!a.referOut&&!(a as any).offTeam).sort((a,b)=>a.name.localeCompare(b.name)).map(agent=>(
                     <div key={agent.id} className="flex items-center gap-4">
                       <span className="font-black text-gray-900 text-sm w-28 shrink-0">{agent.name}</span>
                       <div className="flex items-center gap-2">
