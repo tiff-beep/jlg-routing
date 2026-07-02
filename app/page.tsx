@@ -202,6 +202,7 @@ export default function Home(){
   const findRec=(slot:Slot,state:AppState):Rec|null=>{
     if(!state)return null;
     const priceVal=slot.price?parseFloat(slot.price.replace(/[^0-9.]/g,"")):null;
+    // Sub-$250k only applies to buyer leads
     // Refer out — always routes to Justin only
     if(slot.isReferOut){
       const justin=state.agents.find(a=>a.id==="justin");
@@ -231,7 +232,7 @@ export default function Home(){
       }
     }
 
-    if(priceVal&&priceVal<=250000){
+    if(priceVal&&priceVal<=250000&&slot.leadType==="buyer"){
       const subRot=state.buyerRotation.filter(id=>SUB250K_POOL.includes(id));
       for(const id of subRot){
         const agent=state.agents.find(a=>a.id===id);
@@ -490,37 +491,65 @@ export default function Home(){
               </button>
             )}
 
-            {/* Quick pick — all agents */}
+            {/* Next 2 in rotation */}
+            {slot.rec.alternatives.length>0&&(
+              <div className="mt-3">
+                <p className="text-xs font-black text-gray-500 uppercase mb-2">Next in rotation:</p>
+                <div className="flex gap-2">
+                  {slot.rec.alternatives.map(alt=>(
+                    <div key={alt.agent.id} onClick={()=>handleAccept(slot.id,alt.agent.id)}
+                      className="flex-1 border-2 border-gray-200 rounded-lg p-3 cursor-pointer hover:border-gray-900 hover:bg-gray-900 hover:text-white transition-colors group">
+                      <p className="font-black text-sm text-gray-900 group-hover:text-white">{alt.agent.name}</p>
+                      <div className="mt-1">
+                        {alt.zoneSignal==="strong"&&bdg("green","✓ Area")}
+                        {alt.zoneSignal==="flag"&&bdg("red","⚠ Flag")}
+                        {alt.zoneSignal==="ok"&&bdg("amber","Area ok")}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* None of these? Quick-pick from full roster */}
             {appState&&(()=>{
               const priceVal=slot.price?parseFloat(slot.price.replace(/[^0-9.]/g,"")):null;
+              const shownIds=new Set([slot.rec!.agent.id,...slot.rec!.alternatives.map(a=>a.agent.id)]);
               const allAgents=[...appState.agents]
-                .filter(a=>a.id!==slot.rec!.agent.id&&!a.referOut&&!(a as any).offTeam)
+                .filter(a=>!shownIds.has(a.id)&&!(a as any).referOut&&!(a as any).offTeam)
                 .sort((a,b)=>a.name.localeCompare(b.name));
+              const [open,setOpen]=useState(false);
               return(
                 <div className="mt-3">
-                  <p className="text-xs font-black text-gray-500 uppercase mb-2">Quick-pick any agent:</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {allAgents.map(a=>{
-                      const elig=isEligible(a,slot.leadType,priceVal,slot.isRental,slot.direction,slot.isCash);
-                      const sig=zoneSignal(a,slot.zone);
-                      const isPending=slot.pendingAgentIds.includes(a.id);
-                      return(
-                        <button key={a.id} onClick={()=>handleAccept(slot.id,a.id)}
-                          title={!elig.ok?elig.reason:""}
-                          className={`px-3 py-1.5 rounded-lg text-xs font-bold border-2 transition-colors
-                            ${isPending?"border-gray-200 text-gray-300 bg-gray-50 cursor-not-allowed":
-                              !elig.ok?"border-gray-100 text-gray-400 bg-gray-50 cursor-default":
-                              sig==="flag"?"border-red-300 text-red-700 bg-red-50 hover:bg-red-700 hover:text-white hover:border-red-700":
-                              sig==="strong"?"border-green-300 text-green-800 bg-green-50 hover:bg-green-700 hover:text-white hover:border-green-700":
-                              "border-gray-200 text-gray-700 bg-white hover:border-gray-900 hover:bg-gray-900 hover:text-white"}`}>
-                          {a.name}
-                          {isPending&&" 🔒"}
-                          {!isPending&&sig==="flag"&&" ⚠"}
-                          {!isPending&&sig==="strong"&&elig.ok&&" ✓"}
-                        </button>
-                      );
-                    })}
-                  </div>
+                  <button onClick={()=>setOpen(!open)}
+                    className="text-xs font-black text-gray-500 hover:text-gray-900 underline underline-offset-2">
+                    {open?"▲ Hide":"▼ None of these? Pick someone else"}
+                  </button>
+                  {open&&(
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {allAgents.map(a=>{
+                        const elig=isEligible(a,slot.leadType,priceVal,slot.isRental,slot.direction,slot.isCash);
+                        const sig=zoneSignal(a,slot.zone);
+                        const isPending=slot.pendingAgentIds.includes(a.id);
+                        return(
+                          <button key={a.id} onClick={()=>!isPending&&handleAccept(slot.id,a.id)}
+                            title={!elig.ok?elig.reason||"Ineligible":""}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold border-2 transition-colors
+                              ${isPending?"border-gray-200 text-gray-300 bg-gray-50 cursor-not-allowed":
+                                !elig.ok?"border-gray-100 text-gray-400 bg-gray-50":
+                                sig==="flag"?"border-red-200 text-red-700 bg-red-50 hover:bg-red-700 hover:text-white":
+                                sig==="strong"?"border-green-200 text-green-800 bg-green-50 hover:bg-green-700 hover:text-white":
+                                "border-gray-200 text-gray-700 hover:border-gray-900 hover:bg-gray-900 hover:text-white"}`}>
+                            {a.name}
+                            {isPending&&" 🔒"}
+                            {!isPending&&!elig.ok&&" (ineligible)"}
+                            {!isPending&&elig.ok&&sig==="flag"&&" ⚠"}
+                            {!isPending&&elig.ok&&sig==="strong"&&" ✓"}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               );
             })()}
