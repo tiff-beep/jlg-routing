@@ -708,7 +708,7 @@ export default function Home(){
                   </tr>
                 </thead>
                 <tbody>
-                  {appState.agents.filter(a=>!a.referOut).map((agent,i)=>{
+                  {[...appState.agents].filter(a=>!a.referOut).sort((a,b)=>a.name.localeCompare(b.name)).map((agent,i)=>{
                     const accepted=Math.round(weightedCount(agent.id));
                     const passes=passCount(agent.id);
                     const last=lastOfferDate(agent.id);
