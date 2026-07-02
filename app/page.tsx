@@ -29,7 +29,8 @@ interface Slot {
   rec:Rec|null; timerSecs:number; timerActive:boolean;
   showPass:boolean; passingId:string; passReason:string;
   prevAgentId:string|null;
-  pendingAgentIds:string[]; // agents currently being offered to in other slots
+  pendingAgentIds:string[];
+  quickPickOpen:boolean; // agents currently being offered to in other slots
 }
 
 // These are overridden by editable state in the component
@@ -46,7 +47,7 @@ function buildSlot(id:number):Slot {
     staffName:"",direction:"inbound",
     isDevLead:false,devCommunity:"",isRental:false,isCash:false,isReferOut:false,
     rec:null,timerSecs:0,timerActive:false,
-    showPass:false,passingId:"",passReason:"",prevAgentId:null,pendingAgentIds:[]};
+    showPass:false,passingId:"",passReason:"",prevAgentId:null,pendingAgentIds:[],quickPickOpen:false};
 }
 
 function zoneSignal(agent:Agent,zoneId:string):"strong"|"ok"|"flag"{
@@ -518,14 +519,13 @@ export default function Home(){
               const allAgents=[...appState.agents]
                 .filter(a=>!shownIds.has(a.id)&&!(a as any).referOut&&!(a as any).offTeam)
                 .sort((a,b)=>a.name.localeCompare(b.name));
-              const [open,setOpen]=useState(false);
               return(
                 <div className="mt-3">
-                  <button onClick={()=>setOpen(!open)}
+                  <button onClick={()=>updateSlot(slot.id,{quickPickOpen:!slot.quickPickOpen})}
                     className="text-xs font-black text-gray-500 hover:text-gray-900 underline underline-offset-2">
-                    {open?"▲ Hide":"▼ None of these? Pick someone else"}
+                    {slot.quickPickOpen?"▲ Hide":"▼ None of these? Pick someone else"}
                   </button>
-                  {open&&(
+                  {slot.quickPickOpen&&(
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       {allAgents.map(a=>{
                         const elig=isEligible(a,slot.leadType,priceVal,slot.isRental,slot.direction,slot.isCash);
