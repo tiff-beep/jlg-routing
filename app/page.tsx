@@ -34,12 +34,8 @@ interface Slot {
 }
 
 // These are overridden by editable state in the component
-const DEFAULT_SEED: Record<string,number> = {
-  james:2, kami:1, kyle:1, micahia:2, casey:1, ashton:2, paige:1
-};
-const DEFAULT_PASSES: Record<string,number> = {
-  james:1, gary:1, darrell:1, enya:2, khadeen:3,
-};
+const DEFAULT_SEED: Record<string,number> = {};
+const DEFAULT_PASSES: Record<string,number> = {};
 
 const STAFF = ["Aidan","Jasmine","Kate","Michelle","Ryan"];
 function buildSlot(id:number):Slot {
