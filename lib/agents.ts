@@ -29,13 +29,9 @@ export const DEV_COMMUNITIES = [
 ];
 
 export const PASS_REASONS = [
-  {id:"capacity",label:"At capacity"},
-  {id:"unavailable",label:"Unavailable / scheduling conflict"},
-  {id:"area",label:"Outside service area"},
-  {id:"price_range",label:"Outside price range"},
-  {id:"timed_out",label:"Timed out — no response in 20 min"},
-  {id:"cherry_pick",label:"No clear reason (cherry-pick flag)"},
-  {id:"other",label:"Other legitimate reason"},
+  {id:"timed_out",    label:"Timed out — no response in 20 min", isCherryPick:false, examples:""},
+  {id:"legit",        label:"Legitimate reason", isCherryPick:false, examples:"e.g. scheduling conflict, at capacity, location conflict"},
+  {id:"cherry_pick",  label:"Likely cherry-picking", isCherryPick:true, examples:"e.g. price too low, \"I'll wait for the next one\", no clear reason to pass"},
 ];
 
 export const SUB250K_POOL = ["valerie","darrell","justin","kami"];

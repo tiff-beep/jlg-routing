@@ -12,6 +12,7 @@ interface AppState {
 interface LogEntry {
   agent_id:string; agent_name:string; lead_type:string;
   price:string|null; zone:string|null; source:string;
+  staff_name?:string;
   status:"accepted"|"passed"; pass_reason:string|null;
   is_cherry_pick:boolean; logged_at:string;
 }
@@ -22,27 +23,30 @@ interface Rec {
 }
 interface Slot {
   id:number;
-  leadType:LeadType; price:string; zone:string; source:Source;
+  leadType:LeadType; price:string; zone:string;
+  staffName:string; direction:"inbound"|"outbound";
   isDevLead:boolean; devCommunity:string; isRental:boolean; isCash:boolean;
   rec:Rec|null; timerSecs:number; timerActive:boolean;
   showPass:boolean; passingId:string; passReason:string;
-  prevAgentId:string|null; // for "give back to previous"
+  prevAgentId:string|null;
+  pendingAgentIds:string[]; // agents currently being offered to in other slots
 }
 
-// July seeded counts from spreadsheet
-const JULY_SEED: Record<string,number> = {
+// These are overridden by editable state in the component
+const DEFAULT_SEED: Record<string,number> = {
   james:2, kami:1, kyle:1, micahia:2, casey:1, ashton:2, paige:1
 };
-// July pass counts from spreadsheet
-const JULY_PASSES: Record<string,number> = {
+const DEFAULT_PASSES: Record<string,number> = {
   james:1, gary:1, darrell:1, enya:2, khadeen:3,
 };
 
+const STAFF = ["Aidan","Jasmine","Kate","Michelle","Ryan"];
 function buildSlot(id:number):Slot {
-  return {id,leadType:"buyer",price:"",zone:"",source:"isa",
+  return {id,leadType:"buyer",price:"",zone:"",
+    staffName:"",direction:"inbound",
     isDevLead:false,devCommunity:"",isRental:false,isCash:false,
     rec:null,timerSecs:0,timerActive:false,
-    showPass:false,passingId:"",passReason:"",prevAgentId:null};
+    showPass:false,passingId:"",passReason:"",prevAgentId:null,pendingAgentIds:[]};
 }
 
 function zoneSignal(agent:Agent,zoneId:string):"strong"|"ok"|"flag"{
@@ -72,6 +76,10 @@ export default function Home(){
   const [slots,setSlots]=useState<Slot[]>([buildSlot(1)]);
   const [editingId,setEditingId]=useState<string|null>(null);
   const [editDraft,setEditDraft]=useState<Agent|null>(null);
+  const [seedCounts,setSeedCounts]=useState<Record<string,number>>(DEFAULT_SEED);
+  const [seedPasses,setSeedPasses]=useState<Record<string,number>>(DEFAULT_PASSES);
+  const [editTracker,setEditTracker]=useState(false);
+  const [trackerDraft,setTrackerDraft]=useState<Record<string,{accepted:number,passes:number}>>({});
   const pollRef=useRef<ReturnType<typeof setInterval>|null>(null);
 
   // ── Fetch ───────────────────────────────────────────────────────────────────
@@ -108,7 +116,7 @@ export default function Home(){
           if(slot.rec){
             appendLog({agent_id:slot.rec.agent.id,agent_name:slot.rec.agent.name,
               lead_type:slot.leadType,price:slot.price||null,zone:slot.zone||null,
-              source:slot.source,status:"passed",pass_reason:"timed_out",is_cherry_pick:false,
+              source:slot.direction,staff_name:slot.staffName,status:"passed",pass_reason:"timed_out",is_cherry_pick:false,
               logged_at:new Date().toISOString()});
           }
           return{...slot,timerSecs:0,timerActive:false,showPass:false};
@@ -121,15 +129,14 @@ export default function Home(){
 
   // ── Capacity ────────────────────────────────────────────────────────────────
   const weightedCount=(agentId:string)=>{
-    // seeded July counts
-    const seeded=JULY_SEED[agentId]??0;
+    const seeded=seedCounts[agentId]??0;
     const fromLog=log.filter(l=>l.agent_id===agentId&&l.status==="accepted")
-      .reduce((s,l)=>s+(l.source==="osa"?0.25:1),0);
+      .reduce((s,l)=>s+(l.source==="outbound"?0.5:1),0);
     return seeded+fromLog;
   };
 
   const passCount=(agentId:string)=>{
-    const seeded=JULY_PASSES[agentId]??0;
+    const seeded=seedPasses[agentId]??0;
     const fromLog=log.filter(l=>l.agent_id===agentId&&l.status==="passed").length;
     return seeded+fromLog;
   };
@@ -150,11 +157,11 @@ export default function Home(){
     const accepted=log.filter(l=>l.agent_id===agentId&&l.status==="accepted");
     if(!accepted.length)return false;
     const last=accepted.reduce((a,b)=>a.logged_at>b.logged_at?a:b);
-    return last.source==="osa";
+    return last.source==="outbound";
   };
 
   // ── Eligibility ─────────────────────────────────────────────────────────────
-  const isEligible=(agent:Agent,type:LeadType,priceVal:number|null,rental:boolean,src:Source,cash:boolean):{ok:boolean;reason?:string}=>{
+  const isEligible=(agent:Agent,type:LeadType,priceVal:number|null,rental:boolean,src:string,cash:boolean):{ok:boolean;reason?:string}=>{
     if(!agent.active)return{ok:false,reason:"Inactive"};
     if(agent.onVacation)return{ok:false,reason:"On vacation"};
     if((agent as any).offTeam)return{ok:false,reason:"Off team"};
@@ -167,13 +174,14 @@ export default function Home(){
     if(priceVal&&floor&&priceVal<floor)return{ok:false,reason:`Below floor (${formatPrice(floor)})`};
     if(priceVal&&ceil&&priceVal>ceil)return{ok:false,reason:`Above max (${formatPrice(ceil)})`};
     if(weightedCount(agent.id)>=agent.monthlyCapISA&&!agent.referOut)return{ok:false,reason:"At capacity"};
-    if(src==="osa"&&lastWasOSA(agent.id))return{ok:false,reason:"Skip — last lead was OSA"};
+    if(src==="outbound"&&lastWasOSA(agent.id))return{ok:false,reason:"Skip — last lead was outbound"};
     return{ok:true};
   };
 
   // ── Rotation ────────────────────────────────────────────────────────────────
-  const getRotation=(type:LeadType,src:Source,state:AppState):string[]=>{
-    const isOSA=src==="osa";
+  const getRotation=(type:LeadType,src:string,state:AppState):string[]=>
+  {
+    const isOSA=src==="outbound";
     if(type==="seller")return isOSA?state.osaListingRotation:state.listingRotation;
     if(type==="buysell")return isOSA?state.osaListingRotation:state.buySellRotation;
     return isOSA?state.osaRotation:state.buyerRotation;
@@ -184,7 +192,7 @@ export default function Home(){
       return{devRotations:{...state.devRotations,[slot.devCommunity]:(state.devRotations[slot.devCommunity]??0)+1}};
     }
     const advance=(list:string[])=>{const idx=list.indexOf(agentId);if(idx===-1)return list;return[...list.slice(idx+1),...list.slice(0,idx+1)];};
-    const isOSA=slot.source==="osa";
+    const isOSA=slot.direction==="outbound";
     if(slot.leadType==="seller")return isOSA?{osaListingRotation:advance(state.osaListingRotation)}:{listingRotation:advance(state.listingRotation)};
     if(slot.leadType==="buysell")return isOSA?{osaListingRotation:advance(state.osaListingRotation)}:{buySellRotation:advance(state.buySellRotation)};
     return isOSA?{osaRotation:advance(state.osaRotation)}:{buyerRotation:advance(state.buyerRotation)};
@@ -211,13 +219,13 @@ export default function Home(){
       const idx=(state.devRotations[slot.devCommunity]??0)%pool.length;
       return{agent:pool[idx],zoneSignal:"strong",alternatives:[],isDev:true,community:slot.devCommunity};
     }
-    const rotList=getRotation(slot.leadType,slot.source,state);
+    const rotList=getRotation(slot.leadType,slot.direction,state);
     let found:Rec|null=null;
     const alts:{agent:Agent;zoneSignal:"strong"|"ok"|"flag"}[]=[];
     for(const id of rotList){
       const agent=state.agents.find(a=>a.id===id);
       if(!agent)continue;
-      const elig=isEligible(agent,slot.leadType,priceVal,slot.isRental,slot.source,slot.isCash);
+      const elig=isEligible(agent,slot.leadType,priceVal,slot.isRental,slot.direction,slot.isCash);
       if(!elig.ok)continue;
       const sig=zoneSignal(agent,slot.zone);
       if(!found)found={agent,zoneSignal:sig,alternatives:[]};
@@ -234,13 +242,14 @@ export default function Home(){
   const findNextAfterPass=(skippedId:string,slot:Slot,state:AppState):Rec|null=>{
     if(!state)return null;
     const priceVal=slot.price?parseFloat(slot.price.replace(/[^0-9.]/g,"")):null;
-    const rotList=getRotation(slot.leadType,slot.source,state);
+    const rotList=getRotation(slot.leadType,slot.direction,state);
     const skippedIdx=rotList.indexOf(skippedId);
     for(let i=1;i<rotList.length;i++){
       const id=rotList[(skippedIdx+i)%rotList.length];
       const agent=state.agents.find(a=>a.id===id);
       if(!agent)continue;
-      if(!isEligible(agent,slot.leadType,priceVal,slot.isRental,slot.source,slot.isCash).ok)continue;
+      if(!isEligible(agent,slot.leadType,priceVal,slot.isRental,slot.direction,slot.isCash).ok)continue;
+      if(slot.pendingAgentIds.includes(agent.id))continue; // temp-held by another slot
       return{agent,zoneSignal:zoneSignal(agent,slot.zone),alternatives:[]};
     }
     return null;
@@ -256,7 +265,16 @@ export default function Home(){
     updateSlot(slotId,{rec:r,timerSecs:0,timerActive:false,prevAgentId:null});
   };
 
-  const handleStartTimer=(slotId:number)=>updateSlot(slotId,{timerSecs:1200,timerActive:true});
+  const handleStartTimer=(slotId:number)=>{
+    const slot=slots.find(s=>s.id===slotId);
+    if(!slot?.rec)return;
+    const agentId=slot.rec.agent.id;
+    // Mark this agent as pending in all other slots so they won't be offered
+    setSlots(prev=>prev.map(s=>{
+      if(s.id===slotId)return{...s,timerSecs:1200,timerActive:true};
+      return{...s,pendingAgentIds:[...s.pendingAgentIds.filter(id=>id!==agentId),agentId]};
+    }));
+  };
 
   const handleAccept=(slotId:number,agentId:string)=>{
     if(!appState)return;
@@ -264,10 +282,14 @@ export default function Home(){
     const agent=appState.agents.find(a=>a.id===agentId);
     if(!agent)return;
     appendLog({agent_id:agentId,agent_name:agent.name,lead_type:slot.leadType,price:slot.price||null,
-      zone:slot.zone||null,source:slot.source,status:"accepted",is_cherry_pick:false,logged_at:new Date().toISOString()});
+      zone:slot.zone||null,source:slot.direction,staff_name:slot.staffName,status:"accepted",is_cherry_pick:false,logged_at:new Date().toISOString()});
     const patch=advanceRotation(agentId,slot,appState);
     saveState(patch);
-    updateSlot(slotId,{...buildSlot(slotId),id:slotId});
+    const agentId2=agentId;
+    setSlots(prev=>prev.map(s=>{
+      if(s.id===slotId)return{...buildSlot(slotId),id:slotId};
+      return{...s,pendingAgentIds:s.pendingAgentIds.filter(id=>id!==agentId2)};
+    }));
   };
 
   const handleSkip=(slotId:number,agentId:string)=>{
@@ -285,10 +307,11 @@ export default function Home(){
     const slot=slots.find(s=>s.id===slotId)!;
     if(!slot.passReason)return;
     const agent=appState.agents.find(a=>a.id===slot.passingId);
-    const isCherryPick=slot.passReason==="cherry_pick";
+    const reasonDef=PASS_REASONS.find(r=>r.id===slot.passReason);
+    const isCherryPick=reasonDef?.isCherryPick??false;
     appendLog({agent_id:slot.passingId,agent_name:agent?.name??"",
       lead_type:slot.leadType,price:slot.price||null,zone:slot.zone||null,
-      source:slot.source,status:"passed",pass_reason:slot.passReason,
+      source:slot.direction,staff_name:slot.staffName,status:"passed",pass_reason:slot.passReason,
       is_cherry_pick:isCherryPick,logged_at:new Date().toISOString()});
     const patch=advanceRotation(slot.passingId,slot,appState);
     saveState(patch);
@@ -335,13 +358,21 @@ export default function Home(){
               ))}
             </div>
           </div>
-          <div>
-            <label className="block text-xs font-bold text-gray-600 uppercase mb-1">Source</label>
-            <select className="w-full border-2 border-gray-200 rounded-lg px-2 py-1.5 text-sm font-medium text-gray-800 bg-white" value={slot.source} onChange={e=>updateSlot(slot.id,{source:e.target.value as Source})}>
-              <option value="isa">ISA handoff</option>
-              <option value="osa">OSA handoff</option>
-              <option value="self">Self-generated</option>
-            </select>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="block text-xs font-bold text-gray-600 uppercase mb-1">Your name</label>
+              <select className="w-full border-2 border-gray-200 rounded-lg px-2 py-1.5 text-sm font-medium text-gray-800 bg-white" value={slot.staffName} onChange={e=>updateSlot(slot.id,{staffName:e.target.value})}>
+                <option value="">Select…</option>
+                {STAFF.map(n=><option key={n} value={n}>{n}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-600 uppercase mb-1">Type</label>
+              <select className="w-full border-2 border-gray-200 rounded-lg px-2 py-1.5 text-sm font-medium text-gray-800 bg-white" value={slot.direction} onChange={e=>updateSlot(slot.id,{direction:e.target.value as "inbound"|"outbound"})}>
+                <option value="inbound">Inbound (1.0x)</option>
+                <option value="outbound">Outbound (0.5x)</option>
+              </select>
+            </div>
           </div>
         </div>
         <div className="grid grid-cols-2 gap-3 mb-3">
@@ -350,7 +381,7 @@ export default function Home(){
             <input className="w-full border-2 border-gray-200 rounded-lg px-2 py-1.5 text-sm font-medium text-gray-800" placeholder="e.g. 450000" value={slot.price} onChange={e=>updateSlot(slot.id,{price:e.target.value})}/>
           </div>
           <div>
-            <label className="block text-xs font-bold text-gray-600 uppercase mb-1">Zone</label>
+            <label className="block text-xs font-bold text-gray-600 uppercase mb-1">Location</label>
             <select className="w-full border-2 border-gray-200 rounded-lg px-2 py-1.5 text-sm font-medium text-gray-800 bg-white" value={slot.zone} onChange={e=>updateSlot(slot.id,{zone:e.target.value})}>
               <option value="">Select zone…</option>
               {ZONES.map(z=><option key={z.id} value={z.id}>{z.label}</option>)}
@@ -459,10 +490,14 @@ export default function Home(){
               <div className="space-y-2">
                 {PASS_REASONS.map(r=>(
                   <div key={r.id} onClick={()=>updateSlot(slot.id,{passReason:r.id})}
-                    className={`px-4 py-3 rounded-lg border-2 cursor-pointer text-sm font-semibold transition-colors ${slot.passReason===r.id?"border-gray-900 bg-gray-50 text-gray-900":"border-gray-200 text-gray-700 hover:border-gray-400"}`}>
-                    {r.label}
-                    {r.id==="cherry_pick"&&<span className="ml-2">{bdg("red","Flags agent")}</span>}
-                    {r.id==="timed_out"&&<span className="ml-2">{bdg("amber","No response")}</span>}
+                    className={`px-4 py-3 rounded-lg border-2 cursor-pointer transition-colors ${slot.passReason===r.id?"border-gray-900 bg-gray-50":"border-gray-200 hover:border-gray-400"}`}>
+                    <div className="flex items-center gap-2">
+                      <span className="font-black text-sm text-gray-900">{r.label}</span>
+                      {r.isCherryPick&&bdg("red","Flags agent")}
+                      {r.id==="timed_out"&&bdg("amber","No flag")}
+                      {r.id==="legit"&&bdg("green","No flag")}
+                    </div>
+                    {r.examples&&<p className="text-xs font-semibold text-gray-500 mt-1">{r.examples}</p>}
                   </div>
                 ))}
               </div>
@@ -499,7 +534,7 @@ export default function Home(){
           {(["assign","roster","tracker","dev","admin"] as const).map(v=>(
             <button key={v} onClick={()=>setView(v)}
               className={`px-4 py-1.5 rounded text-sm font-bold capitalize transition-colors ${view===v?"bg-white text-gray-900":"text-white/80 hover:text-white hover:bg-white/10"}`}>
-              {v==="assign"?"Assign lead":v==="tracker"?"July tracker":v==="dev"?"Dev communities":v}
+              {v==="assign"?"Assign lead":v==="tracker"?"Tracker":v==="dev"?"Dev communities":v}
             </button>
           ))}
         </nav>
@@ -520,7 +555,7 @@ export default function Home(){
                 <p className="font-black text-gray-900 mb-3">Today's handoffs</p>
                 <table className="w-full text-xs">
                   <thead><tr className="border-b-2 border-gray-200">
-                    {["Agent","Type","Price","Zone","Source","Status","Time"].map(h=>(
+                    {["Agent","Type","Price","Location","Staff","Type","Status","Time"].map(h=>(
                       <th key={h} className="text-left pb-2 text-gray-600 font-black">{h}</th>
                     ))}
                   </tr></thead>
@@ -531,7 +566,8 @@ export default function Home(){
                         <td className="py-2 font-semibold text-gray-800">{l.lead_type}</td>
                         <td className="py-2 font-semibold text-gray-800">{l.price?`$${parseInt(l.price).toLocaleString()}`:"—"}</td>
                         <td className="py-2 font-semibold text-gray-800">{ZONES.find(z=>z.id===l.zone)?.label?.split(" ")[0]??"—"}</td>
-                        <td className="py-2 font-bold text-gray-800">{l.source?.toUpperCase()}</td>
+                        <td className="py-2 font-semibold text-gray-800">{(l as any).staff_name||"—"}</td>
+                        <td className="py-2 font-bold text-gray-800">{l.source}</td>
                         <td className="py-2">{l.status==="accepted"?bdg("green","Accepted"):l.is_cherry_pick?bdg("red","Cherry-pick"):l.pass_reason==="timed_out"?bdg("amber","Timed out"):bdg("amber","Passed")}</td>
                         <td className="py-2 font-semibold text-gray-600">{new Date(l.logged_at).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}</td>
                       </tr>
@@ -548,7 +584,7 @@ export default function Home(){
           <div>
             <p className="font-black text-gray-900 text-base mb-4">Agent roster</p>
             <div className="space-y-2">
-              {appState.agents.map(agent=>{
+              {[...appState.agents].sort((a,b)=>a.name.localeCompare(b.name)).map(agent=>{
                 const wt=weightedCount(agent.id);
                 const pct=Math.min(100,(wt/agent.monthlyCapISA)*100);
                 const passes=passCount(agent.id);
@@ -602,16 +638,71 @@ export default function Home(){
           </div>
         )}
 
-        {/* ── JULY TRACKER ── */}
+        {/* ── TRACKER ── */}
         {view==="tracker"&&(
           <div>
-            <p className="font-black text-gray-900 text-base mb-1">July handoff tracker</p>
-            <p className="text-sm font-semibold text-gray-600 mb-4">Live count of offers, accepts, passes, and last offer date for the month.</p>
+            <div className="flex justify-between items-center mb-1">
+              <p className="font-black text-gray-900 text-base">Handoff tracker</p>
+              <button onClick={()=>{
+                if(!editTracker){
+                  const draft:Record<string,{accepted:number,passes:number}>={};
+                  appState.agents.filter(a=>!a.referOut).forEach(a=>{
+                    draft[a.id]={accepted:Math.round(weightedCount(a.id)),passes:passCount(a.id)};
+                  });
+                  setTrackerDraft(draft);
+                }
+                setEditTracker(!editTracker);
+              }} className="border-2 border-gray-200 text-gray-700 px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-gray-50">
+                {editTracker?"Cancel edit":"✏ Edit starting counts"}
+              </button>
+            </div>
+            <p className="text-sm font-semibold text-gray-600 mb-4">
+              {editTracker?"Set the correct starting counts for each agent, then save.":"Live count of offers, accepts, passes, and last offer date for the month."}
+            </p>
+            {editTracker&&(
+              <div className="bg-amber-50 border-2 border-amber-200 rounded-xl p-4 mb-4">
+                <p className="text-xs font-black text-amber-800 uppercase mb-3">Edit starting counts</p>
+                <div className="space-y-2">
+                  {appState.agents.filter(a=>!a.referOut&&!(a as any).offTeam).map(agent=>(
+                    <div key={agent.id} className="flex items-center gap-4">
+                      <span className="font-black text-gray-900 text-sm w-28 shrink-0">{agent.name}</span>
+                      <div className="flex items-center gap-2">
+                        <label className="text-xs font-bold text-gray-600">Handoffs:</label>
+                        <input type="number" min="0"
+                          className="w-16 border-2 border-gray-200 rounded px-2 py-1 text-sm font-bold text-gray-900"
+                          value={trackerDraft[agent.id]?.accepted??0}
+                          onChange={e=>setTrackerDraft(d=>({...d,[agent.id]:{...d[agent.id],accepted:parseInt(e.target.value)||0}}))}/>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <label className="text-xs font-bold text-gray-600"># No:</label>
+                        <input type="number" min="0"
+                          className="w-16 border-2 border-gray-200 rounded px-2 py-1 text-sm font-bold text-gray-900"
+                          value={trackerDraft[agent.id]?.passes??0}
+                          onChange={e=>setTrackerDraft(d=>({...d,[agent.id]:{...d[agent.id],passes:parseInt(e.target.value)||0}}))}/>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <button onClick={()=>{
+                  const newCounts:Record<string,number>={};
+                  const newPasses:Record<string,number>={};
+                  Object.entries(trackerDraft).forEach(([id,v])=>{
+                    if(v.accepted>0)newCounts[id]=v.accepted;
+                    if(v.passes>0)newPasses[id]=v.passes;
+                  });
+                  setSeedCounts(newCounts);
+                  setSeedPasses(newPasses);
+                  setEditTracker(false);
+                }} className="mt-4 bg-gray-900 text-white px-5 py-2 rounded-lg text-sm font-bold hover:bg-gray-800">
+                  Save starting counts
+                </button>
+              </div>
+            )}
             <div className="bg-white rounded-xl border-2 border-gray-200 overflow-hidden">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-gray-900 text-white">
-                    {["Agent","Jul handoffs","# No","Last offer date"].map(h=>(
+                    {["Agent","Handoffs MTD","Timeouts","Legit pass","Cherry-pick","Last offer date"].map(h=>(
                       <th key={h} className="text-left px-4 py-3 font-black text-xs uppercase tracking-wide">{h}</th>
                     ))}
                   </tr>
@@ -631,8 +722,10 @@ export default function Home(){
                           </div>
                         </td>
                         <td className="px-4 py-3 font-black text-gray-900 text-lg">{accepted||0}</td>
+                        <td className="px-4 py-3 font-semibold text-gray-700">{timedOutCount(agent.id)||<span className="text-gray-400">—</span>}</td>
+                        <td className="px-4 py-3 font-semibold text-gray-700">{log.filter(l=>l.agent_id===agent.id&&l.pass_reason==="legit").length||<span className="text-gray-400">—</span>}</td>
                         <td className="px-4 py-3">
-                          {passes>0?<span className="font-black text-red-700">{passes}</span>:<span className="text-gray-400 font-semibold">—</span>}
+                          {cherryPickCount(agent.id)>0?<span className="font-black text-red-700">{cherryPickCount(agent.id)}</span>:<span className="text-gray-400">—</span>}
                         </td>
                         <td className="px-4 py-3 font-semibold text-gray-700">
                           {last?new Date(last).toLocaleDateString("en-US",{month:"numeric",day:"numeric",year:"numeric"}):<span className="text-gray-400">—</span>}
@@ -642,6 +735,34 @@ export default function Home(){
                   })}
                 </tbody>
               </table>
+            </div>
+
+            {/* Staff breakdown */}
+            <div className="mt-6">
+              <p className="font-black text-gray-900 text-sm mb-3">Handoffs by staff member</p>
+              <div className="bg-white rounded-xl border-2 border-gray-200 overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead><tr className="bg-gray-900 text-white">
+                    {["Staff","Inbound","Outbound","Total"].map(h=>(
+                      <th key={h} className="text-left px-4 py-3 font-black text-xs uppercase tracking-wide">{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {STAFF.map((name,i)=>{
+                      const inbound=log.filter(l=>l.status==="accepted"&&(l as any).staff_name===name&&l.source==="inbound").length+(seedCounts[`staff_in_${name}`]??0);
+                      const outbound=log.filter(l=>l.status==="accepted"&&(l as any).staff_name===name&&l.source==="outbound").length+(seedCounts[`staff_out_${name}`]??0);
+                      return(
+                        <tr key={name} className={`border-b border-gray-100 ${i%2===1?"bg-gray-50":""}`}>
+                          <td className="px-4 py-3 font-black text-gray-900">{name}</td>
+                          <td className="px-4 py-3 font-semibold text-gray-700">{inbound||"—"}</td>
+                          <td className="px-4 py-3 font-semibold text-gray-700">{outbound||"—"}</td>
+                          <td className="px-4 py-3 font-black text-gray-900">{inbound+outbound||"—"}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         )}
@@ -679,7 +800,7 @@ export default function Home(){
             <p className="font-black text-gray-900 text-base mb-1">Admin — agent settings</p>
             <p className="text-sm font-semibold text-gray-600 mb-4">Changes take effect immediately for all users.</p>
             <div className="space-y-2">
-              {appState.agents.map(agent=>(
+              {[...appState.agents].sort((a,b)=>a.name.localeCompare(b.name)).map(agent=>(
                 <div key={agent.id} className="bg-white rounded-xl border-2 border-gray-200 p-4">
                   <div className="flex justify-between items-center">
                     <div className="flex items-center gap-2">
