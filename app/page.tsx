@@ -494,7 +494,7 @@ export default function Home(){
                 <p className="text-xs font-black text-gray-500 uppercase mb-2">Next in rotation:</p>
                 <div className="flex gap-2">
                   {slot.rec.alternatives.map(alt=>(
-                    <div key={alt.agent.id} onClick={()=>handleAccept(slot.id,alt.agent.id)}
+                    <div key={alt.agent.id} onClick={()=>updateSlot(slot.id,{rec:{...slot.rec!,agent:alt.agent,zoneSignal:alt.zoneSignal,alternatives:[]},timerSecs:0,timerActive:false,quickPickOpen:false})}
                       className="flex-1 border-2 border-gray-200 rounded-lg p-3 cursor-pointer hover:border-gray-900 hover:bg-gray-900 hover:text-white transition-colors group">
                       <p className="font-black text-sm text-gray-900 group-hover:text-white">{alt.agent.name}</p>
                       <div className="mt-1">
@@ -528,7 +528,7 @@ export default function Home(){
                         const sig=zoneSignal(a,slot.zone);
                         const isPending=slot.pendingAgentIds.includes(a.id);
                         return(
-                          <button key={a.id} onClick={()=>!isPending&&handleAccept(slot.id,a.id)}
+                          <button key={a.id} onClick={()=>!isPending&&updateSlot(slot.id,{rec:{...slot.rec!,agent:a,zoneSignal:sig,alternatives:[]},timerSecs:0,timerActive:false,quickPickOpen:false})}
                             title={!elig.ok?elig.reason||"Ineligible":""}
                             className={`px-3 py-1.5 rounded-lg text-xs font-bold border-2 transition-colors
                               ${isPending?"border-gray-200 text-gray-300 bg-gray-50 cursor-not-allowed":
